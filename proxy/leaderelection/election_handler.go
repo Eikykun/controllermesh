@@ -75,6 +75,8 @@ type handler struct {
 	routeSnapshot       *proxyclient.ProtoSpecSnapshot
 	identity            string
 	lastTranslationTime time.Time
+
+	isHashChangedAfterClose bool
 }
 
 func (h *handler) Handle(req *request.RequestInfo, r *http.Request) (bool, *Error) {
@@ -133,8 +135,10 @@ func (h *handler) Handle(req *request.RequestInfo, r *http.Request) (bool, *Erro
 		}()
 
 		if isStrictHashChanged {
-			if h.identity != holdIdentity && h.lastTranslationTime.After(h.routeSnapshot.RefreshTime) {
+			if h.isHashChangedAfterClose || (h.identity != "" && h.identity != holdIdentity && h.lastTranslationTime.After(h.routeSnapshot.RefreshTime)) {
 				close(h.routeSnapshot.Closed)
+				// if strict hash changed when the main container is restarting, routeSnapshot should be closed rather than wait container restart again.
+				h.isHashChangedAfterClose = true
 				h.routeSnapshot = h.proxyClient.GetProtoSpecSnapshot()
 				klog.Infof("Starting route strict hash %s with a new Leader Election ID %s", h.routeSnapshot.SpecHash.RouteStrictHash, holdIdentity)
 				// still reject, for next trusted get
@@ -142,6 +146,8 @@ func (h *handler) Handle(req *request.RequestInfo, r *http.Request) (bool, *Erro
 			// it means this identity may have ListWatch of old hash
 			return true, &Error{Code: http.StatusExpectationFailed, Err: fmt.Errorf("strict hash changed")}
 		}
+
+		h.isHashChangedAfterClose = false
 
 		if h.routeSnapshot.Route.Subset != "" {
 			name := setSubsetIntoName(h.lockName, h.routeSnapshot.Route.Subset)
